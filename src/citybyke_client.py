@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import dataclasses
-from typing import Any
+from typing import Any, List
 
 from src.schemas import BikeStationSchema, BaseBikeStationSchema
 from src.requests import make_request
@@ -12,16 +12,30 @@ STATIONS_URL = "https://wegfinder.at/api/v1/stations"
 NEARBY_ADDRESS_URL = "https://api.i-mobility.at/routing/api/v1/nearby_address"
 
 
-def filter_data(origin_data: dict) -> dict[str, Any]:
+def modify_station_data(origin_data: dict[str, Any]) -> dict[str, Any]:
     """
     Modify origin fetched data
     """
-    origin_data["active"] = True if origin_data.pop("status") == "aktiv" else False
-    origin_data["free_ratio"] = round(origin_data["free_boxes"] / origin_data["boxes"], 2)
-    origin_data["coordinates"] = [origin_data.pop("latitude"), origin_data.pop("longitude")]
-    del origin_data["internal_id"]
+    try:
+        origin_data["active"] = True if origin_data.pop("status") == "aktiv" else False
+        origin_data["free_ratio"] = round(origin_data["free_boxes"] / origin_data["boxes"], 2)
+        origin_data["coordinates"] = [origin_data.pop("latitude"), origin_data.pop("longitude")]
+        del origin_data["internal_id"]
+    except KeyError as err:
+        logger.error(f"Key {str(err)} doesn't exist, data=\n{origin_data}")
+        raise
 
     return origin_data
+
+
+def sort_stations(stations: list[BaseBikeStationSchema]) -> list[BaseBikeStationSchema]:
+    """
+    Sort stations by free bikes DESC and secondary sort by names ASC
+    :param stations: list of station objects
+    :return: sorted list object
+    """
+    sorted_by_free_bikes = sorted(stations, key=lambda x: x.free_bikes, reverse=True)
+    return sorted(sorted_by_free_bikes, key=lambda x: x.name)
 
 
 async def get_stations_data() -> list[BaseBikeStationSchema]:
@@ -31,7 +45,7 @@ async def get_stations_data() -> list[BaseBikeStationSchema]:
     """
     response = await make_request("get", STATIONS_URL)
 
-    return [BaseBikeStationSchema(**filter_data(row)) for row in response]
+    return [BaseBikeStationSchema(**modify_station_data(row)) for row in response]
 
 
 async def set_addresses(stations: list[BaseBikeStationSchema]) -> list[BikeStationSchema]:
@@ -53,7 +67,7 @@ async def set_addresses(stations: list[BaseBikeStationSchema]) -> list[BikeStati
                 params={"latitude": station.coordinates[0], "longitude": station.coordinates[1]},
             )
             if limit.locked():
-                # Concurrency limit reached, waiting...
+                # Concurrency limit reached, waiting
                 await asyncio.sleep(1)
 
             return BikeStationSchema(**dataclasses.asdict(station), address=response["data"]["name"])
